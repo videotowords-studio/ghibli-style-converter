@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "pages:build": "CLOUDFLARE_PAGES=true next build",
     "start": "next start",
     "lint": "eslint .",
     "worker:typecheck": "tsc -p worker/tsconfig.json --noEmit"

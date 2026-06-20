@@ -57,6 +57,14 @@ GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 NEXT_PUBLIC_API_BASE=https://你的-worker.workers.dev
 ```
 
+Cloudflare Pages 前端构建配置：
+
+```bash
+Build command: pnpm pages:build
+Build output directory: out
+Root directory: /
+```
+
 ## 技术说明
 
 - 前端：Next.js App Router + React
