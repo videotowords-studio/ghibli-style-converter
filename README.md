@@ -1,6 +1,6 @@
 # Ghibli Style Converter
 
-一个本地可运行、之后可推到 GitHub 的 Next.js 网站。用户上传图片后，服务端调用 Gemini 图片编辑能力生成温暖手绘动画质感的结果图，并支持下载。
+一个本地可运行、之后可推到 GitHub 和 Cloudflare 的创作网站。用户注册后获得 100 积分，可以使用图片转绘和高考水平文章撰写，并查看自己的生成记录。
 
 ## 本地运行
 
@@ -70,6 +70,7 @@ Cloudflare Worker 后端需要配置：
 ```bash
 GEMINI_API_KEY=你的_key
 GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+GEMINI_TEXT_MODEL=gemini-2.5-flash
 SESSION_SECRET=一段随机长字符串
 ```
 
@@ -80,12 +81,21 @@ Binding name: DB
 Database: 你创建的 D1 数据库
 ```
 
-Worker 会在第一次注册或登录时自动创建 `users` 表。
+Worker 会在第一次注册、登录或生成时自动创建/更新 `users` 和 `generations` 表。
+
+积分规则：
+
+```text
+新用户注册：赠送 100 积分
+图片转绘：每次扣 10 积分
+文案撰写：每次扣 5 积分
+积分不足：提示联系站长充值
+```
 
 ## 技术说明
 
 - 前端：Next.js App Router + React
-- 后端：Cloudflare Worker 提供 `/api/auth/register`、`/api/auth/login`、`/api/auth/me`、`/api/auth/logout` 和 `/api/transform`
-- 数据库：Cloudflare D1 存储邮箱账号和密码哈希
+- 后端：Cloudflare Worker 提供登录注册、图片转绘、文章撰写和生成记录接口
+- 数据库：Cloudflare D1 存储邮箱账号、密码哈希、积分和生成记录
 - 默认模型：`gemini-2.5-flash-image`
 - 上传限制：仅图片，最大 8MB

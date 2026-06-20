@@ -1,7 +1,12 @@
 "use client";
 
 import {
+  BookOpenText,
+  Clock3,
+  Copy,
   Download,
+  FileText,
+  History,
   ImagePlus,
   Lock,
   LogIn,
@@ -12,6 +17,7 @@ import {
   Sparkles,
   UploadCloud,
   UserPlus,
+  WalletCards,
   X
 } from "lucide-react";
 import Image from "next/image";
@@ -25,14 +31,11 @@ import {
   useState
 } from "react";
 
-type TransformResponse = {
-  image?: string;
-  mimeType?: string;
-  error?: string;
-};
+type Tab = "image" | "article" | "history";
 
 type AuthUser = {
   email: string;
+  credits: number;
 };
 
 type AuthResponse = {
@@ -41,19 +44,68 @@ type AuthResponse = {
   error?: string;
 };
 
+type TransformResponse = {
+  image?: string;
+  mimeType?: string;
+  credits?: number;
+  error?: string;
+};
+
+type ArticleResponse = {
+  article?: string;
+  credits?: number;
+  error?: string;
+};
+
+type HistoryItem = {
+  id: number;
+  kind: "image" | "article";
+  title: string;
+  input: string;
+  output: string | null;
+  cost: number;
+  created_at: string;
+};
+
+type HistoryResponse = {
+  history?: HistoryItem[];
+  credits?: number;
+  error?: string;
+};
+
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "";
 const SESSION_TOKEN_KEY = "ghibli_session_token";
 
+function authHeaders() {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const token = window.localStorage.getItem(SESSION_TOKEN_KEY);
+
+  return token
+    ? {
+        Authorization: `Bearer ${token}`
+      }
+    : undefined;
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("image");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [resultUrl, setResultUrl] = useState<string>("");
   const [resultMimeType, setResultMimeType] = useState<string>("image/png");
   const [error, setError] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isImageLoading, setIsImageLoading] = useState(false);
+  const [articleInput, setArticleInput] = useState("");
+  const [article, setArticle] = useState("");
+  const [articleLoading, setArticleLoading] = useState(false);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -74,18 +126,17 @@ export default function Home() {
     return "png";
   }, [resultMimeType]);
 
+  const imageDisabled = !file || isImageLoading || !user || user.credits < 10;
+  const articleDisabled =
+    articleInput.trim().length < 4 || articleLoading || !user || user.credits < 5;
+
   useEffect(() => {
     let ignore = false;
 
     async function loadSession() {
       try {
-        const token = window.localStorage.getItem(SESSION_TOKEN_KEY);
         const response = await fetch(`${API_BASE}/api/auth/me`, {
-          headers: token
-            ? {
-                Authorization: `Bearer ${token}`
-              }
-            : undefined,
+          headers: authHeaders(),
           credentials: "include"
         });
 
@@ -93,6 +144,7 @@ export default function Home() {
 
         if (!ignore && response.ok && payload.user) {
           setUser(payload.user);
+          loadHistory();
         }
       } catch {
         // A missing session is fine; the user can log in from the form.
@@ -109,6 +161,39 @@ export default function Home() {
       ignore = true;
     };
   }, []);
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/history`, {
+        headers: authHeaders(),
+        credentials: "include"
+      });
+
+      const payload = (await response.json()) as HistoryResponse;
+
+      if (response.ok) {
+        setHistory(payload.history || []);
+
+        if (typeof payload.credits === "number") {
+          setUser((current) =>
+            current ? { ...current, credits: payload.credits ?? current.credits } : current
+          );
+        }
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function updateCredits(credits?: number) {
+    if (typeof credits !== "number") {
+      return;
+    }
+
+    setUser((current) => (current ? { ...current, credits } : current));
+  }
 
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -143,6 +228,7 @@ export default function Home() {
       setUser(payload.user);
       setPassword("");
       setError("");
+      loadHistory();
     } catch (caughtError) {
       setAuthError(
         caughtError instanceof Error ? caughtError.message : "操作失败，请稍后再试。"
@@ -153,20 +239,15 @@ export default function Home() {
   }
 
   async function handleLogout() {
-    const token = window.localStorage.getItem(SESSION_TOKEN_KEY);
-
     await fetch(`${API_BASE}/api/auth/logout`, {
       method: "POST",
-      headers: token
-        ? {
-            Authorization: `Bearer ${token}`
-          }
-        : undefined,
+      headers: authHeaders(),
       credentials: "include"
     });
 
     window.localStorage.removeItem(SESSION_TOKEN_KEY);
     setUser(null);
+    setHistory([]);
     clearImage();
   }
 
@@ -216,26 +297,21 @@ export default function Home() {
   }
 
   async function handleTransform() {
-    if (!file || isLoading) {
+    if (!file || isImageLoading) {
       return;
     }
 
-    setIsLoading(true);
+    setIsImageLoading(true);
     setError("");
     setResultUrl("");
 
     try {
       const formData = new FormData();
       formData.append("image", file);
-      const token = window.localStorage.getItem(SESSION_TOKEN_KEY);
 
       const response = await fetch(`${API_BASE}/api/transform`, {
         method: "POST",
-        headers: token
-          ? {
-              Authorization: `Bearer ${token}`
-            }
-          : undefined,
+        headers: authHeaders(),
         credentials: "include",
         body: formData
       });
@@ -248,6 +324,8 @@ export default function Home() {
 
       setResultUrl(payload.image);
       setResultMimeType(payload.mimeType || "image/png");
+      updateCredits(payload.credits);
+      loadHistory();
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -255,8 +333,58 @@ export default function Home() {
           : "转换失败，请稍后再试。"
       );
     } finally {
-      setIsLoading(false);
+      setIsImageLoading(false);
     }
+  }
+
+  async function handleArticleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (articleDisabled) {
+      return;
+    }
+
+    setArticleLoading(true);
+    setError("");
+    setArticle("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/write`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders()
+        },
+        credentials: "include",
+        body: JSON.stringify({ input: articleInput })
+      });
+
+      const payload = (await response.json()) as ArticleResponse;
+
+      if (!response.ok || !payload.article) {
+        throw new Error(payload.error || "撰写失败，请稍后再试。");
+      }
+
+      setArticle(payload.article);
+      updateCredits(payload.credits);
+      loadHistory();
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "撰写失败，请稍后再试。"
+      );
+    } finally {
+      setArticleLoading(false);
+    }
+  }
+
+  async function copyArticle(text = article) {
+    if (!text) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(text);
   }
 
   function clearImage() {
@@ -270,15 +398,287 @@ export default function Home() {
     setError("");
   }
 
+  function renderWorkspace() {
+    if (activeTab === "article") {
+      return (
+        <div className="writing-layout">
+          <section className="tool-panel" aria-label="文案输入">
+            <div className="panel-title">
+              <BookOpenText aria-hidden="true" size={18} />
+              <span>文案撰写</span>
+              <small>5 积分/次</small>
+            </div>
+
+            <form className="writing-form" onSubmit={handleArticleSubmit}>
+              <textarea
+                value={articleInput}
+                onChange={(event) => setArticleInput(event.target.value)}
+                maxLength={1200}
+                placeholder="输入主题、观点、素材或提纲，例如：以时间的价值为主题，写一篇高考水平议论文。"
+              />
+              <div className="writing-meta">
+                <span>{articleInput.length}/1200</span>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={articleDisabled}
+                >
+                  {articleLoading ? (
+                    <Loader2 className="spin" aria-hidden="true" size={18} />
+                  ) : (
+                    <FileText aria-hidden="true" size={18} />
+                  )}
+                  {articleLoading ? "撰写中" : "生成文章"}
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="tool-panel" aria-label="文章结果">
+            <div className="panel-title">
+              <Sparkles aria-hidden="true" size={18} />
+              <span>文章结果</span>
+            </div>
+            <div className={`article-output ${article ? "has-text" : ""}`}>
+              {article ? (
+                <article>{article}</article>
+              ) : (
+                <div className="result-empty">
+                  {articleLoading ? (
+                    <Loader2 className="spin" aria-hidden="true" size={34} />
+                  ) : (
+                    <FileText aria-hidden="true" size={34} />
+                  )}
+                  <span>{articleLoading ? "正在撰写" : "等待生成"}</span>
+                </div>
+              )}
+            </div>
+            <div className="actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => copyArticle()}
+                disabled={!article}
+              >
+                <Copy aria-hidden="true" size={18} />
+                复制
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setArticle("")}
+                disabled={!article}
+              >
+                <X aria-hidden="true" size={18} />
+                清空
+              </button>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    if (activeTab === "history") {
+      return (
+        <section className="tool-panel history-panel" aria-label="生成记录">
+          <div className="panel-title">
+            <History aria-hidden="true" size={18} />
+            <span>生成记录</span>
+            <button className="inline-refresh" type="button" onClick={loadHistory}>
+              <RefreshCcw aria-hidden="true" size={15} />
+              刷新
+            </button>
+          </div>
+
+          {historyLoading ? (
+            <div className="session-loading compact">
+              <Loader2 className="spin" aria-hidden="true" size={26} />
+              <span>读取记录</span>
+            </div>
+          ) : history.length ? (
+            <div className="history-list">
+              {history.map((item) => (
+                <article className="history-item" key={item.id}>
+                  <div className="history-head">
+                    <span className={`kind-badge ${item.kind}`}>
+                      {item.kind === "image" ? "转绘" : "文章"}
+                    </span>
+                    <strong>{item.title}</strong>
+                    <small>-{item.cost} 积分</small>
+                  </div>
+                  <p>{item.input}</p>
+                  {item.output ? (
+                    item.kind === "image" && item.output.startsWith("data:image/") ? (
+                      <div className="history-image">
+                        <Image
+                          src={item.output}
+                          alt={item.title}
+                          fill
+                          unoptimized
+                          sizes="220px"
+                        />
+                      </div>
+                    ) : (
+                      <pre>{item.output}</pre>
+                    )
+                  ) : null}
+                  <time>
+                    <Clock3 aria-hidden="true" size={14} />
+                    {new Date(item.created_at).toLocaleString("zh-CN")}
+                  </time>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="result-empty static-empty">
+              <History aria-hidden="true" size={34} />
+              <span>暂无记录</span>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    return (
+      <>
+        <div className="panels">
+          <section className="tool-panel" aria-label="上传原图">
+            <div className="panel-title">
+              <ImagePlus aria-hidden="true" size={18} />
+              <span>吉卜力转绘</span>
+              <small>10 积分/次</small>
+            </div>
+
+            <label
+              className={`upload-zone ${isDragging ? "is-dragging" : ""} ${
+                previewUrl ? "has-preview" : ""
+              }`}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+            >
+              <input
+                ref={inputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+              />
+
+              {previewUrl ? (
+                <Image
+                  src={previewUrl}
+                  alt="原图预览"
+                  fill
+                  sizes="(max-width: 900px) 100vw, 50vw"
+                  unoptimized
+                  className="preview-image"
+                />
+              ) : (
+                <div className="upload-empty">
+                  <UploadCloud aria-hidden="true" size={32} />
+                  <span>选择图片</span>
+                  <small>PNG、JPG、WEBP · 8MB 内</small>
+                </div>
+              )}
+            </label>
+
+            <div className="actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => inputRef.current?.click()}
+              >
+                <UploadCloud aria-hidden="true" size={18} />
+                上传
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={handleTransform}
+                disabled={imageDisabled}
+              >
+                {isImageLoading ? (
+                  <Loader2 className="spin" aria-hidden="true" size={18} />
+                ) : (
+                  <Sparkles aria-hidden="true" size={18} />
+                )}
+                {isImageLoading ? "生成中" : "开始转绘"}
+              </button>
+            </div>
+          </section>
+
+          <section className="tool-panel" aria-label="生成结果">
+            <div className="panel-title">
+              <Sparkles aria-hidden="true" size={18} />
+              <span>结果</span>
+            </div>
+
+            <div className={`result-frame ${resultUrl ? "has-result" : ""}`}>
+              {resultUrl ? (
+                <Image
+                  src={resultUrl}
+                  alt="转换后的图片"
+                  fill
+                  sizes="(max-width: 900px) 100vw, 50vw"
+                  unoptimized
+                  className="preview-image"
+                />
+              ) : (
+                <div className="result-empty">
+                  {isImageLoading ? (
+                    <Loader2 className="spin" aria-hidden="true" size={34} />
+                  ) : (
+                    <Sparkles aria-hidden="true" size={34} />
+                  )}
+                  <span>{isImageLoading ? "正在生成" : "等待生成"}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="actions">
+              <a
+                className={`download-button ${resultUrl ? "" : "is-disabled"}`}
+                href={resultUrl || undefined}
+                download={`ghibli-style.${outputExtension}`}
+                aria-disabled={!resultUrl}
+              >
+                <Download aria-hidden="true" size={18} />
+                下载
+              </a>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={clearImage}
+                disabled={!file && !resultUrl}
+              >
+                <X aria-hidden="true" size={18} />
+                清空
+              </button>
+            </div>
+          </section>
+        </div>
+      </>
+    );
+  }
+
   return (
     <main className="shell">
-      <section className="workspace" aria-label="图片转换工作台">
+      <section className="workspace" aria-label="创作工作台">
         <header className="masthead">
           <div>
-            <p className="eyebrow">Gemini Image Studio</p>
-            <h1>Ghibli 转绘</h1>
+            <p className="eyebrow">Creative Studio</p>
+            <h1>智能创作工坊</h1>
           </div>
           <div className="header-actions">
+            {user ? (
+              <span className="credit-chip">
+                <WalletCards aria-hidden="true" size={17} />
+                {user.credits} 积分
+              </span>
+            ) : null}
             {user ? <span className="user-chip">{user.email}</span> : null}
             {user ? (
               <button
@@ -291,16 +691,6 @@ export default function Home() {
                 <LogOut aria-hidden="true" size={18} />
               </button>
             ) : null}
-            <button
-              className="icon-button"
-              type="button"
-              onClick={clearImage}
-              disabled={!file && !resultUrl}
-              aria-label="清空当前图片"
-              title="清空当前图片"
-            >
-              <RefreshCcw aria-hidden="true" size={18} />
-            </button>
           </div>
         </header>
 
@@ -311,124 +701,41 @@ export default function Home() {
           </div>
         ) : user ? (
           <>
-            <div className="panels">
-              <section className="tool-panel" aria-label="上传原图">
-                <div className="panel-title">
-                  <ImagePlus aria-hidden="true" size={18} />
-                  <span>原图</span>
-                </div>
+            <nav className="tabs" aria-label="功能切换">
+              <button
+                type="button"
+                className={activeTab === "image" ? "is-active" : ""}
+                onClick={() => setActiveTab("image")}
+              >
+                <ImagePlus aria-hidden="true" size={17} />
+                图片转绘
+              </button>
+              <button
+                type="button"
+                className={activeTab === "article" ? "is-active" : ""}
+                onClick={() => setActiveTab("article")}
+              >
+                <BookOpenText aria-hidden="true" size={17} />
+                文案撰写
+              </button>
+              <button
+                type="button"
+                className={activeTab === "history" ? "is-active" : ""}
+                onClick={() => {
+                  setActiveTab("history");
+                  loadHistory();
+                }}
+              >
+                <History aria-hidden="true" size={17} />
+                生成记录
+              </button>
+            </nav>
 
-                <label
-                  className={`upload-zone ${isDragging ? "is-dragging" : ""} ${
-                    previewUrl ? "has-preview" : ""
-                  }`}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setIsDragging(true);
-                  }}
-                  onDragLeave={() => setIsDragging(false)}
-                  onDrop={handleDrop}
-                >
-                  <input
-                    ref={inputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileChange}
-                  />
+            {user.credits <= 0 ? (
+              <p className="notice-message">积分已用完，请联系站长充值后继续使用。</p>
+            ) : null}
 
-                  {previewUrl ? (
-                    <Image
-                      src={previewUrl}
-                      alt="原图预览"
-                      fill
-                      sizes="(max-width: 900px) 100vw, 50vw"
-                      unoptimized
-                      className="preview-image"
-                    />
-                  ) : (
-                    <div className="upload-empty">
-                      <UploadCloud aria-hidden="true" size={32} />
-                      <span>选择图片</span>
-                      <small>PNG、JPG、WEBP · 8MB 内</small>
-                    </div>
-                  )}
-                </label>
-
-                <div className="actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => inputRef.current?.click()}
-                  >
-                    <UploadCloud aria-hidden="true" size={18} />
-                    上传
-                  </button>
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={handleTransform}
-                    disabled={!file || isLoading}
-                  >
-                    {isLoading ? (
-                      <Loader2 className="spin" aria-hidden="true" size={18} />
-                    ) : (
-                      <Sparkles aria-hidden="true" size={18} />
-                    )}
-                    {isLoading ? "生成中" : "开始转绘"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="tool-panel" aria-label="生成结果">
-                <div className="panel-title">
-                  <Sparkles aria-hidden="true" size={18} />
-                  <span>结果</span>
-                </div>
-
-                <div className={`result-frame ${resultUrl ? "has-result" : ""}`}>
-                  {resultUrl ? (
-                    <Image
-                      src={resultUrl}
-                      alt="转换后的图片"
-                      fill
-                      sizes="(max-width: 900px) 100vw, 50vw"
-                      unoptimized
-                      className="preview-image"
-                    />
-                  ) : (
-                    <div className="result-empty">
-                      {isLoading ? (
-                        <Loader2 className="spin" aria-hidden="true" size={34} />
-                      ) : (
-                        <Sparkles aria-hidden="true" size={34} />
-                      )}
-                      <span>{isLoading ? "正在生成" : "等待生成"}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="actions">
-                  <a
-                    className={`download-button ${resultUrl ? "" : "is-disabled"}`}
-                    href={resultUrl || undefined}
-                    download={`ghibli-style.${outputExtension}`}
-                    aria-disabled={!resultUrl}
-                  >
-                    <Download aria-hidden="true" size={18} />
-                    下载
-                  </a>
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={clearImage}
-                    disabled={!file && !resultUrl}
-                  >
-                    <X aria-hidden="true" size={18} />
-                    清空
-                  </button>
-                </div>
-              </section>
-            </div>
+            {renderWorkspace()}
 
             {error ? <p className="error-message">{error}</p> : null}
           </>
@@ -436,8 +743,8 @@ export default function Home() {
           <section className="auth-panel" aria-label="邮箱登录注册">
             <div className="auth-copy">
               <Sparkles aria-hidden="true" size={28} />
-              <h2>{authMode === "login" ? "登录后开始转绘" : "创建你的账号"}</h2>
-              <p>使用邮箱账号保存访问权限，之后可以继续扩展历史记录和个人素材库。</p>
+              <h2>{authMode === "login" ? "登录后开始创作" : "创建你的账号"}</h2>
+              <p>新用户注册赠送 100 积分，可用于图片转绘和高考水平文章撰写。</p>
             </div>
 
             <form className="auth-form" onSubmit={handleAuthSubmit}>

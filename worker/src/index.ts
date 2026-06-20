@@ -2,16 +2,47 @@ export interface Env {
   DB?: D1Database;
   GEMINI_API_KEY: string;
   GEMINI_IMAGE_MODEL?: string;
+  GEMINI_TEXT_MODEL?: string;
   ALLOWED_ORIGIN?: string;
   SESSION_SECRET?: string;
 }
 
+type Session = {
+  userId: number;
+  email: string;
+};
+
+type UserRow = {
+  id: number;
+  email: string;
+  credits: number;
+};
+
+type GenerationKind = "image" | "article";
+
+type AuthResult =
+  | {
+      db: D1Database;
+      session: Session;
+      user: UserRow;
+    }
+  | {
+      response: Response;
+    };
+
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_MODEL = "gemini-2.5-flash-image";
+const MAX_STORED_IMAGE_CHARS = 1_500_000;
+const MAX_ARTICLE_INPUT_CHARS = 1200;
+const DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image";
+const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
+const INITIAL_CREDITS = 100;
+const IMAGE_COST = 10;
+const ARTICLE_COST = 5;
 const PBKDF2_ITERATIONS = 100_000;
 const SESSION_COOKIE = "ghibli_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const encoder = new TextEncoder();
+
 const STYLE_PROMPT = [
   "Convert the uploaded image into a warm, hand-painted Japanese animated film still.",
   "Keep the main subject, pose, framing, and important identity details recognizable.",
@@ -244,6 +275,12 @@ function validateCredentials(email: string, password: string) {
   return "";
 }
 
+async function columnExists(db: D1Database, table: string, column: string) {
+  const result = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+
+  return (result.results || []).some((row) => row.name === column);
+}
+
 async function ensureSchema(db: D1Database) {
   await db.prepare(
     `CREATE TABLE IF NOT EXISTS users (
@@ -251,12 +288,37 @@ async function ensureSchema(db: D1Database) {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
+      credits INTEGER NOT NULL DEFAULT ${INITIAL_CREDITS},
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`
+  ).run();
+
+  if (!(await columnExists(db, "users", "credits"))) {
+    await db.prepare(
+      `ALTER TABLE users ADD COLUMN credits INTEGER NOT NULL DEFAULT ${INITIAL_CREDITS}`
+    ).run();
+  }
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS generations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      input TEXT NOT NULL,
+      output TEXT,
+      cost INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     )`
   ).run();
 
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)"
+  ).run();
+
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_generations_user_created ON generations(user_id, created_at DESC)"
   ).run();
 }
 
@@ -269,10 +331,17 @@ function missingDatabaseResponse(request: Request, env: Env) {
   );
 }
 
+function userPayload(user: UserRow) {
+  return {
+    email: user.email,
+    credits: user.credits
+  };
+}
+
 async function respondWithSession(
   request: Request,
   env: Env,
-  user: { id: number; email: string },
+  user: UserRow,
   status = 200
 ) {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
@@ -281,7 +350,7 @@ async function respondWithSession(
   return jsonResponse(
     request,
     env,
-    { user: { email: user.email }, token },
+    { user: userPayload(user), token },
     status,
     {
       "Set-Cookie": createCookie(token)
@@ -330,15 +399,15 @@ async function register(request: Request, env: Env) {
 
   const { salt, passwordHash } = await hashPassword(password);
   const result = await db.prepare(
-    "INSERT INTO users (email, password_hash, password_salt) VALUES (?, ?, ?)"
+    "INSERT INTO users (email, password_hash, password_salt, credits) VALUES (?, ?, ?, ?)"
   )
-    .bind(email, passwordHash, salt)
+    .bind(email, passwordHash, salt, INITIAL_CREDITS)
     .run();
 
   return respondWithSession(
     request,
     env,
-    { id: Number(result.meta.last_row_id), email },
+    { id: Number(result.meta.last_row_id), email, credits: INITIAL_CREDITS },
     201
   );
 }
@@ -367,7 +436,7 @@ async function login(request: Request, env: Env) {
   }
 
   const user = await db.prepare(
-    "SELECT id, email, password_hash, password_salt FROM users WHERE email = ?"
+    "SELECT id, email, password_hash, password_salt, credits FROM users WHERE email = ?"
   )
     .bind(email)
     .first<{
@@ -375,6 +444,7 @@ async function login(request: Request, env: Env) {
       email: string;
       password_hash: string;
       password_salt: string;
+      credits: number;
     }>();
 
   if (
@@ -384,17 +454,59 @@ async function login(request: Request, env: Env) {
     return jsonResponse(request, env, { error: "邮箱或密码不正确。" }, 401);
   }
 
-  return respondWithSession(request, env, { id: user.id, email: user.email });
+  return respondWithSession(request, env, {
+    id: user.id,
+    email: user.email,
+    credits: user.credits
+  });
 }
 
-async function me(request: Request, env: Env) {
+async function getAuthedUser(request: Request, env: Env): Promise<AuthResult> {
+  const db = env.DB;
+
+  if (!db) {
+    return {
+      response: missingDatabaseResponse(request, env)
+    };
+  }
+
+  await ensureSchema(db);
+
   const session = await readSession(request, env);
 
   if (!session) {
-    return jsonResponse(request, env, { user: null }, 401);
+    return {
+      response: jsonResponse(request, env, { error: "请先登录。" }, 401)
+    };
   }
 
-  return jsonResponse(request, env, { user: { email: session.email } });
+  const user = await db.prepare(
+    "SELECT id, email, credits FROM users WHERE id = ? AND email = ?"
+  )
+    .bind(session.userId, session.email)
+    .first<UserRow>();
+
+  if (!user) {
+    return {
+      response: jsonResponse(request, env, { error: "登录状态已失效，请重新登录。" }, 401)
+    };
+  }
+
+  return {
+    db,
+    session,
+    user
+  };
+}
+
+async function me(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  return jsonResponse(request, env, { user: userPayload(auth.user) });
 }
 
 function logout(request: Request, env: Env) {
@@ -411,18 +523,18 @@ function logout(request: Request, env: Env) {
 
 function getGeminiErrorMessage(status: number, message: string) {
   if (status === 401 || status === 403) {
-    return "Gemini key 无效、权限不足，或没有启用 Gemini API。";
+    return "生成服务暂时不可用，请联系站长检查配置。";
   }
 
   if (status === 404) {
-    return "当前 Gemini 图片模型不可用，请检查 GEMINI_IMAGE_MODEL。";
+    return "生成服务暂时不可用，请联系站长检查配置。";
   }
 
   if (status === 429) {
-    return "Gemini 当前额度不足或请求过于频繁，请稍后再试。";
+    return "生成服务当前额度不足或请求过于频繁，请稍后再试。";
   }
 
-  return message || "Gemini API 返回错误。";
+  return message || "生成服务返回错误。";
 }
 
 function getAuthErrorMessage(error: unknown, fallback: string) {
@@ -431,6 +543,43 @@ function getAuthErrorMessage(error: unknown, fallback: string) {
   }
 
   return fallback;
+}
+
+function insufficientCreditsResponse(request: Request, env: Env, credits: number, cost: number) {
+  return jsonResponse(
+    request,
+    env,
+    { error: `积分不足。本次需要 ${cost} 积分，当前剩余 ${credits} 积分，请联系站长充值。` },
+    402
+  );
+}
+
+async function chargeCredits(db: D1Database, userId: number, cost: number) {
+  await db.prepare("UPDATE users SET credits = credits - ? WHERE id = ?")
+    .bind(cost, userId)
+    .run();
+
+  const user = await db.prepare("SELECT id, email, credits FROM users WHERE id = ?")
+    .bind(userId)
+    .first<UserRow>();
+
+  return user?.credits ?? 0;
+}
+
+async function recordGeneration(
+  db: D1Database,
+  userId: number,
+  kind: GenerationKind,
+  title: string,
+  input: string,
+  output: string | null,
+  cost: number
+) {
+  await db.prepare(
+    "INSERT INTO generations (user_id, kind, title, input, output, cost) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(userId, kind, title, input, output, cost)
+    .run();
 }
 
 function isUploadedFile(value: File | string | null): value is File {
@@ -444,14 +593,18 @@ function isUploadedFile(value: File | string | null): value is File {
 }
 
 async function transformImage(request: Request, env: Env) {
-  const session = await readSession(request, env);
+  const auth = await getAuthedUser(request, env);
 
-  if (!session) {
-    return jsonResponse(request, env, { error: "请先登录后再开始转绘。" }, 401);
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  if (auth.user.credits < IMAGE_COST) {
+    return insufficientCreditsResponse(request, env, auth.user.credits, IMAGE_COST);
   }
 
   if (!env.GEMINI_API_KEY) {
-    return jsonResponse(request, env, { error: "Worker 还没有配置 GEMINI_API_KEY。" }, 500);
+    return jsonResponse(request, env, { error: "生成服务暂时不可用，请联系站长检查配置。" }, 500);
   }
 
   const formData = await request.formData();
@@ -469,7 +622,7 @@ async function transformImage(request: Request, env: Env) {
     return jsonResponse(request, env, { error: "图片不能超过 8MB。" }, 400);
   }
 
-  const model = env.GEMINI_IMAGE_MODEL || DEFAULT_MODEL;
+  const model = env.GEMINI_IMAGE_MODEL || DEFAULT_IMAGE_MODEL;
   const imageBytes = await image.arrayBuffer();
   let binaryImage = "";
   const imageArray = new Uint8Array(imageBytes);
@@ -546,16 +699,192 @@ async function transformImage(request: Request, env: Env) {
     return jsonResponse(
       request,
       env,
-      { error: text || "Gemini 没有返回图片。请换一张图片，或稍后再试。" },
+      { error: text || "生成服务没有返回图片。请换一张图片，或稍后再试。" },
       502
     );
   }
 
   const mimeType = imagePart.inlineData.mimeType || "image/png";
+  const imageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+  const storedOutput =
+    imageUrl.length <= MAX_STORED_IMAGE_CHARS
+      ? imageUrl
+      : "图片结果较大，记录已保留生成信息；请在本次生成页及时下载结果。";
+  const credits = await chargeCredits(auth.db, auth.user.id, IMAGE_COST);
+  const title = image.name || "图片转绘";
+
+  await recordGeneration(
+    auth.db,
+    auth.user.id,
+    "image",
+    title,
+    `${title} · ${Math.ceil(image.size / 1024)}KB`,
+    storedOutput,
+    IMAGE_COST
+  );
 
   return jsonResponse(request, env, {
     mimeType,
-    image: `data:${mimeType};base64,${imagePart.inlineData.data}`
+    image: imageUrl,
+    credits
+  });
+}
+
+function buildArticlePrompt(input: string) {
+  return [
+    "你是一位高考语文作文阅卷经验丰富的写作老师。",
+    "请把用户给出的主题、观点或素材，扩展成一篇中文文章。",
+    "要求：达到高考优秀作文水平；中心明确；结构完整；语言凝练有文采；论证或叙述自然；不要空泛堆砌。",
+    "文章需要包含标题，正文约 900 到 1200 字。不要写任何使用说明，不要出现 AI 自述。",
+    `用户输入：${input}`
+  ].join("\n");
+}
+
+async function writeArticle(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  if (auth.user.credits < ARTICLE_COST) {
+    return insufficientCreditsResponse(request, env, auth.user.credits, ARTICLE_COST);
+  }
+
+  if (!env.GEMINI_API_KEY) {
+    return jsonResponse(request, env, { error: "创作服务暂时不可用，请联系站长检查配置。" }, 500);
+  }
+
+  const body = await parseJsonBody(request);
+  const input = typeof body?.input === "string" ? body.input.trim() : "";
+
+  if (input.length < 4) {
+    return jsonResponse(request, env, { error: "请输入更完整的主题或素材。" }, 400);
+  }
+
+  if (input.length > MAX_ARTICLE_INPUT_CHARS) {
+    return jsonResponse(
+      request,
+      env,
+      { error: `输入内容不能超过 ${MAX_ARTICLE_INPUT_CHARS} 个字。` },
+      400
+    );
+  }
+
+  const model = env.GEMINI_TEXT_MODEL || DEFAULT_TEXT_MODEL;
+  const geminiResponse = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: buildArticlePrompt(input)
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.8,
+          maxOutputTokens: 2200
+        }
+      })
+    }
+  );
+
+  const payload = (await geminiResponse.json()) as {
+    error?: { message?: string };
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+        }>;
+      };
+    }>;
+  };
+
+  if (!geminiResponse.ok) {
+    return jsonResponse(
+      request,
+      env,
+      {
+        error: getGeminiErrorMessage(
+          geminiResponse.status,
+          payload.error?.message || ""
+        )
+      },
+      500
+    );
+  }
+
+  const article = (payload.candidates?.[0]?.content?.parts || [])
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  if (!article) {
+    return jsonResponse(request, env, { error: "创作服务没有返回文章，请稍后再试。" }, 502);
+  }
+
+  const title = article
+    .split("\n")
+    .find((line) => line.trim())
+    ?.replace(/^#+\s*/, "")
+    .slice(0, 60) || "文案撰写";
+  const credits = await chargeCredits(auth.db, auth.user.id, ARTICLE_COST);
+
+  await recordGeneration(
+    auth.db,
+    auth.user.id,
+    "article",
+    title,
+    input,
+    article,
+    ARTICLE_COST
+  );
+
+  return jsonResponse(request, env, {
+    article,
+    credits
+  });
+}
+
+async function listHistory(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  const url = new URL(request.url);
+  const limit = Math.min(Number(url.searchParams.get("limit")) || 30, 50);
+  const result = await auth.db.prepare(
+    `SELECT id, kind, title, input, output, cost, created_at
+     FROM generations
+     WHERE user_id = ?
+     ORDER BY id DESC
+     LIMIT ?`
+  )
+    .bind(auth.user.id, limit)
+    .all<{
+      id: number;
+      kind: GenerationKind;
+      title: string;
+      input: string;
+      output: string | null;
+      cost: number;
+      created_at: string;
+    }>();
+
+  return jsonResponse(request, env, {
+    history: result.results || [],
+    credits: auth.user.credits
   });
 }
 
@@ -614,7 +943,35 @@ export default {
         return jsonResponse(
           request,
           env,
-          { error: "图片转换失败，请稍后再试。" },
+          { error: getAuthErrorMessage(error, "图片转换失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/write" && request.method === "POST") {
+      try {
+        return await writeArticle(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "文案撰写失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/history" && request.method === "GET") {
+      try {
+        return await listHistory(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "记录读取失败") },
           500
         );
       }

@@ -43,22 +43,22 @@ function createGoogleClient(apiKey: string) {
 function getErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403) {
-      return "Gemini key 无效、权限不足，或没有启用 Gemini API。";
+      return "生成服务暂时不可用，请联系站长检查配置。";
     }
 
     if (error.status === 404) {
-      return "当前 Gemini 图片模型不可用，请检查 GEMINI_IMAGE_MODEL。";
+      return "生成服务暂时不可用，请联系站长检查配置。";
     }
 
     if (error.status === 429) {
-      return "Gemini 当前额度不足或请求过于频繁，请稍后再试。";
+      return "生成服务当前额度不足或请求过于频繁，请稍后再试。";
     }
 
-    return `Gemini API 返回错误：${error.message}`;
+    return `生成服务返回错误：${error.message}`;
   }
 
   if (error instanceof TypeError && error.message === "fetch failed") {
-    return "服务器无法连接 Gemini API，请检查本机/部署环境是否能访问 generativelanguage.googleapis.com。";
+    return "服务器无法连接生成服务，请检查本机或部署环境网络。";
   }
 
   if (error instanceof Error) {
@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "服务器还没有配置 GEMINI_API_KEY。" },
+        { error: "生成服务暂时不可用，请联系站长检查配置。" },
         { status: 500 }
       );
     }
@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
         {
           error:
             text ||
-            "Gemini 没有返回图片。请换一张图片，或稍后再试。"
+            "生成服务没有返回图片。请换一张图片，或稍后再试。"
         },
         { status: 502 }
       );

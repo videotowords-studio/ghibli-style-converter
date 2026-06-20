@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ghibli Style Converter",
-  description: "Upload a photo and convert it into a warm hand-painted animation look."
+  title: "智能创作工坊",
+  description: "图片转绘、文章撰写和生成记录管理。"
 };
 
 export default function RootLayout({
