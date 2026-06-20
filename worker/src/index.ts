@@ -425,6 +425,14 @@ function getGeminiErrorMessage(status: number, message: string) {
   return message || "Gemini API 返回错误。";
 }
 
+function getAuthErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) {
+    return `${fallback}：${error.message}`;
+  }
+
+  return fallback;
+}
+
 function isUploadedFile(value: File | string | null): value is File {
   return (
     typeof value === "object" &&
@@ -567,7 +575,12 @@ export default {
         return await register(request, env);
       } catch (error) {
         console.error(error);
-        return jsonResponse(request, env, { error: "注册失败，请稍后再试。" }, 500);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "注册失败") },
+          500
+        );
       }
     }
 
@@ -576,7 +589,12 @@ export default {
         return await login(request, env);
       } catch (error) {
         console.error(error);
-        return jsonResponse(request, env, { error: "登录失败，请稍后再试。" }, 500);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "登录失败") },
+          500
+        );
       }
     }
 
