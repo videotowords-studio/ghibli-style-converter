@@ -58,6 +58,7 @@ a {
 
 .workspace {
   width: min(1180px, 100%);
+  min-width: 0;
   min-height: min(760px, calc(100vh - 64px));
   padding: 28px;
   border: 1px solid var(--line);
@@ -687,6 +688,7 @@ h1 {
 
 .auth-panel {
   width: min(760px, 100%);
+  min-width: 0;
   min-height: 460px;
   display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(280px, 1fr);
@@ -701,6 +703,7 @@ h1 {
 }
 
 .auth-copy {
+  min-width: 0;
   display: grid;
   gap: 12px;
   color: var(--mint-deep);
@@ -719,9 +722,11 @@ h1 {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .auth-form {
+  min-width: 0;
   display: grid;
   gap: 16px;
 }
@@ -849,8 +854,21 @@ h1 {
 }
 
 @media (max-width: 520px) {
+  .shell {
+    padding: 8px;
+    place-items: start stretch;
+  }
+
+  .workspace {
+    width: 100%;
+    min-height: calc(100vh - 16px);
+    padding: 14px;
+  }
+
   .masthead {
     align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .header-actions {
@@ -886,6 +904,8 @@ h1 {
   }
 
   .auth-panel {
+    width: 100%;
+    margin-top: 14px;
     padding: 18px;
   }
 
