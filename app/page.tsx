@@ -19,6 +19,7 @@ type TransformResponse = {
 };
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "";
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -100,7 +101,7 @@ export default function Home() {
       const formData = new FormData();
       formData.append("image", file);
 
-      const response = await fetch("/api/transform", {
+      const response = await fetch(`${API_BASE}/api/transform`, {
         method: "POST",
         body: formData
       });

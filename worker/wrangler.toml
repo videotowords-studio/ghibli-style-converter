@@ -1,0 +1,6 @@
+name = "ghibli-style-worker"
+main = "src/index.ts"
+compatibility_date = "2026-06-20"
+
+[vars]
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"

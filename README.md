@@ -51,6 +51,12 @@ GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 
 纯 GitHub Pages 不能安全保存服务器密钥，因此不适合直接部署这个项目。推荐使用 Vercel 或其他支持 Next.js API routes 的平台。
 
+如果前端和后端分开部署，例如前端在 Cloudflare Pages、后端在 Cloudflare Workers，需要在前端环境变量里设置：
+
+```bash
+NEXT_PUBLIC_API_BASE=https://你的-worker.workers.dev
+```
+
 ## 技术说明
 
 - 前端：Next.js App Router + React
