@@ -162,6 +162,16 @@ h1 {
   font-weight: 800;
 }
 
+.toast {
+  margin: -8px 0 18px;
+  padding: 11px 14px;
+  border: 1px solid rgba(60, 127, 100, 0.24);
+  border-radius: 8px;
+  background: rgba(60, 127, 100, 0.12);
+  color: var(--mint-deep);
+  font-weight: 900;
+}
+
 .panels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -367,6 +377,17 @@ h1 {
   line-height: 1.7;
 }
 
+.tool-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.wish-textarea {
+  min-height: 180px;
+}
+
 .writing-form textarea:focus {
   border-color: rgba(36, 87, 68, 0.55);
   box-shadow: 0 0 0 3px rgba(60, 127, 100, 0.14);
@@ -533,6 +554,137 @@ h1 {
   min-height: 360px;
 }
 
+.wish-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.75fr) minmax(0, 1.25fr);
+  gap: 18px;
+}
+
+.wish-wall {
+  min-height: 480px;
+}
+
+.wish-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wish-card {
+  min-height: 116px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(36, 87, 68, 0.14);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(241, 184, 75, 0.14), rgba(109, 169, 200, 0.1)),
+    rgba(255, 255, 255, 0.72);
+}
+
+.wish-card p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.7;
+}
+
+.wish-card small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.lottery-panel {
+  min-height: 520px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  text-align: center;
+}
+
+.lottery-wheel {
+  width: min(320px, 72vw);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  margin: 18px auto;
+  border: 12px solid rgba(36, 87, 68, 0.14);
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 0deg,
+      #f1b84b 0 40deg,
+      #6da9c8 40deg 80deg,
+      #c76b6d 80deg 120deg,
+      #3c7f64 120deg 160deg,
+      #f7f0df 160deg 200deg,
+      #f1b84b 200deg 240deg,
+      #6da9c8 240deg 280deg,
+      #c76b6d 280deg 320deg,
+      #3c7f64 320deg 360deg
+    );
+  box-shadow: inset 0 0 0 12px rgba(255, 255, 255, 0.56), var(--shadow);
+}
+
+.lottery-wheel.is-spinning {
+  animation: spin 0.55s linear infinite;
+}
+
+.wheel-core {
+  width: 42%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 250, 241, 0.94);
+  color: var(--mint-deep);
+  font-size: 34px;
+  font-weight: 900;
+  box-shadow: 0 10px 28px rgba(28, 42, 34, 0.2);
+}
+
+.centered-actions {
+  justify-content: center;
+}
+
+.member-panel {
+  min-height: 440px;
+}
+
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.member-grid div {
+  min-height: 112px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.member-grid small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.member-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mint-deep);
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auth-panel {
   width: min(760px, 100%);
   min-height: 460px;
@@ -678,6 +830,15 @@ h1 {
   }
 
   .writing-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .wish-layout,
+  .member-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wish-list {
     grid-template-columns: 1fr;
   }
 

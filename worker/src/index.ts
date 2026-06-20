@@ -16,9 +16,10 @@ type UserRow = {
   id: number;
   email: string;
   credits: number;
+  last_checkin_date?: string | null;
 };
 
-type GenerationKind = "image" | "article";
+type GenerationKind = "image" | "essay" | "dream" | "lottery";
 
 type AuthResult =
   | {
@@ -32,12 +33,15 @@ type AuthResult =
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_STORED_IMAGE_CHARS = 1_500_000;
-const MAX_ARTICLE_INPUT_CHARS = 1200;
+const MAX_TEXT_INPUT_CHARS = 1200;
 const DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image";
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
 const INITIAL_CREDITS = 100;
-const IMAGE_COST = 10;
-const ARTICLE_COST = 5;
+const DAILY_LOGIN_BONUS = 5;
+const IMAGE_COST = 110;
+const ESSAY_COST = 5;
+const DREAM_COST = 5;
+const LOTTERY_COST = 2;
 const PBKDF2_ITERATIONS = 100_000;
 const SESSION_COOKIE = "ghibli_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -289,6 +293,7 @@ async function ensureSchema(db: D1Database) {
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       credits INTEGER NOT NULL DEFAULT ${INITIAL_CREDITS},
+      last_checkin_date TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`
   ).run();
@@ -297,6 +302,10 @@ async function ensureSchema(db: D1Database) {
     await db.prepare(
       `ALTER TABLE users ADD COLUMN credits INTEGER NOT NULL DEFAULT ${INITIAL_CREDITS}`
     ).run();
+  }
+
+  if (!(await columnExists(db, "users", "last_checkin_date"))) {
+    await db.prepare("ALTER TABLE users ADD COLUMN last_checkin_date TEXT").run();
   }
 
   await db.prepare(
@@ -314,11 +323,26 @@ async function ensureSchema(db: D1Database) {
   ).run();
 
   await db.prepare(
+    `CREATE TABLE IF NOT EXISTS wishes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      email TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )`
+  ).run();
+
+  await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)"
   ).run();
 
   await db.prepare(
     "CREATE INDEX IF NOT EXISTS idx_generations_user_created ON generations(user_id, created_at DESC)"
+  ).run();
+
+  await db.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_wishes_created ON wishes(created_at DESC)"
   ).run();
 }
 
@@ -334,7 +358,43 @@ function missingDatabaseResponse(request: Request, env: Env) {
 function userPayload(user: UserRow) {
   return {
     email: user.email,
-    credits: user.credits
+    credits: user.credits,
+    lastCheckinDate: user.last_checkin_date || null
+  };
+}
+
+function todayKey() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
+async function applyDailyCheckin(db: D1Database, user: UserRow) {
+  const today = todayKey();
+
+  if (user.last_checkin_date === today) {
+    return {
+      user,
+      message: "欢迎回来"
+    };
+  }
+
+  await db.prepare(
+    "UPDATE users SET credits = credits + ?, last_checkin_date = ? WHERE id = ?"
+  )
+    .bind(DAILY_LOGIN_BONUS, today, user.id)
+    .run();
+
+  return {
+    user: {
+      ...user,
+      credits: user.credits + DAILY_LOGIN_BONUS,
+      last_checkin_date: today
+    },
+    message: `欢迎回来，已赠送 ${DAILY_LOGIN_BONUS} 积分`
   };
 }
 
@@ -342,7 +402,8 @@ async function respondWithSession(
   request: Request,
   env: Env,
   user: UserRow,
-  status = 200
+  status = 200,
+  message?: string
 ) {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const token = await signSession({ userId: user.id, email: user.email, exp }, env);
@@ -350,7 +411,7 @@ async function respondWithSession(
   return jsonResponse(
     request,
     env,
-    { user: userPayload(user), token },
+    { user: userPayload(user), token, message },
     status,
     {
       "Set-Cookie": createCookie(token)
@@ -407,8 +468,14 @@ async function register(request: Request, env: Env) {
   return respondWithSession(
     request,
     env,
-    { id: Number(result.meta.last_row_id), email, credits: INITIAL_CREDITS },
-    201
+    {
+      id: Number(result.meta.last_row_id),
+      email,
+      credits: INITIAL_CREDITS,
+      last_checkin_date: null
+    },
+    201,
+    `注册成功，已赠送 ${INITIAL_CREDITS} 积分`
   );
 }
 
@@ -436,7 +503,7 @@ async function login(request: Request, env: Env) {
   }
 
   const user = await db.prepare(
-    "SELECT id, email, password_hash, password_salt, credits FROM users WHERE email = ?"
+    "SELECT id, email, password_hash, password_salt, credits, last_checkin_date FROM users WHERE email = ?"
   )
     .bind(email)
     .first<{
@@ -445,6 +512,7 @@ async function login(request: Request, env: Env) {
       password_hash: string;
       password_salt: string;
       credits: number;
+      last_checkin_date: string | null;
     }>();
 
   if (
@@ -454,11 +522,14 @@ async function login(request: Request, env: Env) {
     return jsonResponse(request, env, { error: "邮箱或密码不正确。" }, 401);
   }
 
-  return respondWithSession(request, env, {
+  const checkedIn = await applyDailyCheckin(db, {
     id: user.id,
     email: user.email,
-    credits: user.credits
+    credits: user.credits,
+    last_checkin_date: user.last_checkin_date
   });
+
+  return respondWithSession(request, env, checkedIn.user, 200, checkedIn.message);
 }
 
 async function getAuthedUser(request: Request, env: Env): Promise<AuthResult> {
@@ -481,7 +552,7 @@ async function getAuthedUser(request: Request, env: Env): Promise<AuthResult> {
   }
 
   const user = await db.prepare(
-    "SELECT id, email, credits FROM users WHERE id = ? AND email = ?"
+    "SELECT id, email, credits, last_checkin_date FROM users WHERE id = ? AND email = ?"
   )
     .bind(session.userId, session.email)
     .first<UserRow>();
@@ -539,7 +610,7 @@ function getGeminiErrorMessage(status: number, message: string) {
 
 function getAuthErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) {
-    return `${fallback}：${error.message}`;
+    return `${fallback}，请稍后再试。`;
   }
 
   return fallback;
@@ -730,49 +801,7 @@ async function transformImage(request: Request, env: Env) {
   });
 }
 
-function buildArticlePrompt(input: string) {
-  return [
-    "你是一位高考语文作文阅卷经验丰富的写作老师。",
-    "请把用户给出的主题、观点或素材，扩展成一篇中文文章。",
-    "硬性要求：输出一篇完整文章，不少于 800 个中文汉字，不要中途停止。",
-    "质量要求：达到高考优秀作文水平；中心明确；结构完整；语言凝练有文采；论证或叙述自然；不要空泛堆砌。",
-    "结构要求：第一行写标题，正文至少 6 个自然段，有清楚开头、展开和结尾。",
-    "不要写任何使用说明，不要出现 AI 自述。",
-    `用户输入：${input}`
-  ].join("\n");
-}
-
-async function writeArticle(request: Request, env: Env) {
-  const auth = await getAuthedUser(request, env);
-
-  if ("response" in auth) {
-    return auth.response;
-  }
-
-  if (auth.user.credits < ARTICLE_COST) {
-    return insufficientCreditsResponse(request, env, auth.user.credits, ARTICLE_COST);
-  }
-
-  if (!env.GEMINI_API_KEY) {
-    return jsonResponse(request, env, { error: "创作服务暂时不可用，请联系站长检查配置。" }, 500);
-  }
-
-  const body = await parseJsonBody(request);
-  const input = typeof body?.input === "string" ? body.input.trim() : "";
-
-  if (input.length < 4) {
-    return jsonResponse(request, env, { error: "请输入更完整的主题或素材。" }, 400);
-  }
-
-  if (input.length > MAX_ARTICLE_INPUT_CHARS) {
-    return jsonResponse(
-      request,
-      env,
-      { error: `输入内容不能超过 ${MAX_ARTICLE_INPUT_CHARS} 个字。` },
-      400
-    );
-  }
-
+async function generateText(env: Env, prompt: string, maxOutputTokens = 4096) {
   const model = env.GEMINI_TEXT_MODEL || DEFAULT_TEXT_MODEL;
   const geminiResponse = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
@@ -786,14 +815,14 @@ async function writeArticle(request: Request, env: Env) {
           {
             parts: [
               {
-                text: buildArticlePrompt(input)
+                text: prompt
               }
             ]
           }
         ],
         generationConfig: {
-          temperature: 0.8,
-          maxOutputTokens: 4096
+          temperature: 0.82,
+          maxOutputTokens
         }
       })
     }
@@ -811,24 +840,72 @@ async function writeArticle(request: Request, env: Env) {
   };
 
   if (!geminiResponse.ok) {
-    return jsonResponse(
-      request,
-      env,
-      {
-        error: getGeminiErrorMessage(
-          geminiResponse.status,
-          payload.error?.message || ""
-        )
-      },
-      500
+    throw new Error(
+      getGeminiErrorMessage(geminiResponse.status, payload.error?.message || "")
     );
   }
 
-  const article = (payload.candidates?.[0]?.content?.parts || [])
+  return (payload.candidates?.[0]?.content?.parts || [])
     .map((part) => part.text)
     .filter(Boolean)
     .join("\n")
     .trim();
+}
+
+function buildEssayPrompt(input: string) {
+  return [
+    "你是一位高考语文作文阅卷经验丰富的写作老师。",
+    "请把用户给出的主题、观点或素材，扩展成一篇中文文章。",
+    "硬性要求：输出一篇完整文章，不少于 800 个中文汉字，不要中途停止。",
+    "质量要求：达到高考优秀作文水平；中心明确；结构完整；语言凝练有文采；论证或叙述自然；不要空泛堆砌。",
+    "结构要求：第一行写标题，正文至少 6 个自然段，有清楚开头、展开和结尾。",
+    "不要写任何使用说明，不要出现 AI 自述。",
+    `用户输入：${input}`
+  ].join("\n");
+}
+
+function buildDreamPrompt(input: string) {
+  return [
+    "你是一位温和、有洞察力的解梦顾问。",
+    "请根据用户描述的梦境，进行周公解梦风格的解释，但不要做迷信恐吓，也不要给医疗、法律、投资等高风险建议。",
+    "输出结构：梦境概述、可能象征、现实提醒、可以怎么处理。",
+    "语言要亲切、具体、让用户觉得被理解。",
+    `用户梦境：${input}`
+  ].join("\n");
+}
+
+async function writeEssay(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  if (auth.user.credits < ESSAY_COST) {
+    return insufficientCreditsResponse(request, env, auth.user.credits, ESSAY_COST);
+  }
+
+  if (!env.GEMINI_API_KEY) {
+    return jsonResponse(request, env, { error: "创作服务暂时不可用，请联系站长检查配置。" }, 500);
+  }
+
+  const body = await parseJsonBody(request);
+  const input = typeof body?.input === "string" ? body.input.trim() : "";
+
+  if (input.length < 4) {
+    return jsonResponse(request, env, { error: "请输入更完整的主题或素材。" }, 400);
+  }
+
+  if (input.length > MAX_TEXT_INPUT_CHARS) {
+    return jsonResponse(
+      request,
+      env,
+      { error: `输入内容不能超过 ${MAX_TEXT_INPUT_CHARS} 个字。` },
+      400
+    );
+  }
+
+  const article = await generateText(env, buildEssayPrompt(input), 4096);
 
   if (!article) {
     return jsonResponse(request, env, { error: "创作服务没有返回文章，请稍后再试。" }, 502);
@@ -838,21 +915,167 @@ async function writeArticle(request: Request, env: Env) {
     .split("\n")
     .find((line) => line.trim())
     ?.replace(/^#+\s*/, "")
-    .slice(0, 60) || "文案撰写";
-  const credits = await chargeCredits(auth.db, auth.user.id, ARTICLE_COST);
+    .slice(0, 60) || "作文宝";
+  const credits = await chargeCredits(auth.db, auth.user.id, ESSAY_COST);
 
   await recordGeneration(
     auth.db,
     auth.user.id,
-    "article",
+    "essay",
     title,
     input,
     article,
-    ARTICLE_COST
+    ESSAY_COST
   );
 
   return jsonResponse(request, env, {
     article,
+    credits
+  });
+}
+
+async function interpretDream(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  if (auth.user.credits < DREAM_COST) {
+    return insufficientCreditsResponse(request, env, auth.user.credits, DREAM_COST);
+  }
+
+  if (!env.GEMINI_API_KEY) {
+    return jsonResponse(request, env, { error: "解读服务暂时不可用，请联系站长检查配置。" }, 500);
+  }
+
+  const body = await parseJsonBody(request);
+  const input = typeof body?.input === "string" ? body.input.trim() : "";
+
+  if (input.length < 4) {
+    return jsonResponse(request, env, { error: "请输入更完整的梦境内容。" }, 400);
+  }
+
+  if (input.length > MAX_TEXT_INPUT_CHARS) {
+    return jsonResponse(
+      request,
+      env,
+      { error: `输入内容不能超过 ${MAX_TEXT_INPUT_CHARS} 个字。` },
+      400
+    );
+  }
+
+  const dream = await generateText(env, buildDreamPrompt(input), 1800);
+
+  if (!dream) {
+    return jsonResponse(request, env, { error: "解读服务没有返回内容，请稍后再试。" }, 502);
+  }
+
+  const title = `梦境解读：${input.slice(0, 24)}`;
+  const credits = await chargeCredits(auth.db, auth.user.id, DREAM_COST);
+
+  await recordGeneration(
+    auth.db,
+    auth.user.id,
+    "dream",
+    title,
+    input,
+    dream,
+    DREAM_COST
+  );
+
+  return jsonResponse(request, env, {
+    dream,
+    credits
+  });
+}
+
+async function postWish(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  const body = await parseJsonBody(request);
+  const content = typeof body?.content === "string" ? body.content.trim() : "";
+
+  if (content.length < 2) {
+    return jsonResponse(request, env, { error: "请写下你的心愿。" }, 400);
+  }
+
+  if (content.length > 200) {
+    return jsonResponse(request, env, { error: "心愿不能超过 200 个字。" }, 400);
+  }
+
+  await auth.db.prepare(
+    "INSERT INTO wishes (user_id, email, content) VALUES (?, ?, ?)"
+  )
+    .bind(auth.user.id, auth.user.email, content)
+    .run();
+
+  return listWishes(request, env);
+}
+
+async function listWishes(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  const result = await auth.db.prepare(
+    `SELECT id, email, content, created_at
+     FROM wishes
+     ORDER BY id DESC
+     LIMIT 80`
+  ).all<{
+    id: number;
+    email: string;
+    content: string;
+    created_at: string;
+  }>();
+
+  return jsonResponse(request, env, {
+    wishes: result.results || [],
+    credits: auth.user.credits
+  });
+}
+
+async function drawLottery(request: Request, env: Env) {
+  const auth = await getAuthedUser(request, env);
+
+  if ("response" in auth) {
+    return auth.response;
+  }
+
+  if (auth.user.credits < LOTTERY_COST) {
+    return insufficientCreditsResponse(request, env, auth.user.credits, LOTTERY_COST);
+  }
+
+  const prize = crypto.getRandomValues(new Uint32Array(1))[0] % 9 + 1;
+  await auth.db.prepare("UPDATE users SET credits = credits - ? + ? WHERE id = ?")
+    .bind(LOTTERY_COST, prize, auth.user.id)
+    .run();
+
+  const user = await auth.db.prepare("SELECT id, email, credits, last_checkin_date FROM users WHERE id = ?")
+    .bind(auth.user.id)
+    .first<UserRow>();
+  const credits = user?.credits ?? auth.user.credits - LOTTERY_COST + prize;
+  const title = `神秘积分抽奖：获得 ${prize} 积分`;
+
+  await recordGeneration(
+    auth.db,
+    auth.user.id,
+    "lottery",
+    title,
+    "试试你的手气吧",
+    title,
+    LOTTERY_COST
+  );
+
+  return jsonResponse(request, env, {
+    prize,
     credits
   });
 }
@@ -953,13 +1176,69 @@ export default {
 
     if (url.pathname === "/api/write" && request.method === "POST") {
       try {
-        return await writeArticle(request, env);
+        return await writeEssay(request, env);
       } catch (error) {
         console.error(error);
         return jsonResponse(
           request,
           env,
-          { error: getAuthErrorMessage(error, "文案撰写失败") },
+          { error: getAuthErrorMessage(error, "作文生成失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/dream" && request.method === "POST") {
+      try {
+        return await interpretDream(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "解梦失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/wishes" && request.method === "GET") {
+      try {
+        return await listWishes(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "心愿读取失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/wishes" && request.method === "POST") {
+      try {
+        return await postWish(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "心愿提交失败") },
+          500
+        );
+      }
+    }
+
+    if (url.pathname === "/api/lottery" && request.method === "POST") {
+      try {
+        return await drawLottery(request, env);
+      } catch (error) {
+        console.error(error);
+        return jsonResponse(
+          request,
+          env,
+          { error: getAuthErrorMessage(error, "抽奖失败") },
           500
         );
       }

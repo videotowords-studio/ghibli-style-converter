@@ -54,7 +54,7 @@ function getErrorMessage(error: unknown) {
       return "生成服务当前额度不足或请求过于频繁，请稍后再试。";
     }
 
-    return `生成服务返回错误：${error.message}`;
+    return "生成服务返回错误，请稍后再试。";
   }
 
   if (error instanceof TypeError && error.message === "fetch failed") {
@@ -62,7 +62,7 @@ function getErrorMessage(error: unknown) {
   }
 
   if (error instanceof Error) {
-    return error.message;
+    return "图片转换失败，请稍后再试。";
   }
 
   return "图片转换失败，请稍后再试。";
