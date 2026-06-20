@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const maxDuration = 90;
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_MODEL = "gemini-3.1-flash-image";
+const DEFAULT_MODEL = "gemini-2.5-flash-image";
 
 const STYLE_PROMPT = [
   "Convert the uploaded image into a warm, hand-painted Japanese animated film still.",
