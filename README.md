@@ -65,9 +65,27 @@ Build output directory: out
 Root directory: /
 ```
 
+Cloudflare Worker 后端需要配置：
+
+```bash
+GEMINI_API_KEY=你的_key
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+SESSION_SECRET=一段随机长字符串
+```
+
+注册登录服务使用 Cloudflare D1。创建 D1 数据库后，在 Worker 里添加 D1 binding：
+
+```bash
+Binding name: DB
+Database: 你创建的 D1 数据库
+```
+
+Worker 会在第一次注册或登录时自动创建 `users` 表。
+
 ## 技术说明
 
 - 前端：Next.js App Router + React
-- 后端：`/api/transform` 接收上传图片，服务端调用 `@google/genai`
+- 后端：Cloudflare Worker 提供 `/api/auth/register`、`/api/auth/login`、`/api/auth/me`、`/api/auth/logout` 和 `/api/transform`
+- 数据库：Cloudflare D1 存储邮箱账号和密码哈希
 - 默认模型：`gemini-2.5-flash-image`
 - 上传限制：仅图片，最大 8MB

@@ -1,4 +1,4 @@
-name = "ghibli-style-worker"
+name = "ghibli-style-converter"
 main = "src/index.ts"
 compatibility_date = "2026-06-20"
 
