@@ -8,7 +8,7 @@ export interface Env {
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MODEL = "gemini-2.5-flash-image";
-const PBKDF2_ITERATIONS = 210_000;
+const PBKDF2_ITERATIONS = 100_000;
 const SESSION_COOKIE = "ghibli_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const encoder = new TextEncoder();
