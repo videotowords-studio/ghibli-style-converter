@@ -4,3 +4,8 @@ compatibility_date = "2026-06-20"
 
 [vars]
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ghibli-users"
+database_id = "d965f57c-cf26-4a3e-acb2-ae2ef39793ba"
