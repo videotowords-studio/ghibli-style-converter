@@ -1,5 +1,6 @@
 import { ApiError, GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
+import { ProxyAgent, setGlobalDispatcher } from "undici";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -22,6 +23,22 @@ type GeminiPart = {
     mimeType?: string;
   };
 };
+
+function createGoogleClient(apiKey: string) {
+  const proxyUrl =
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy;
+
+  if (!proxyUrl) {
+    return new GoogleGenAI({ apiKey });
+  }
+
+  setGlobalDispatcher(new ProxyAgent(proxyUrl));
+
+  return new GoogleGenAI({ apiKey });
+}
 
 function getErrorMessage(error: unknown) {
   if (error instanceof ApiError) {
@@ -87,7 +104,7 @@ export async function POST(request: NextRequest) {
     }
 
     const imageBuffer = Buffer.from(await image.arrayBuffer());
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = createGoogleClient(apiKey);
     const model = process.env.GEMINI_IMAGE_MODEL || DEFAULT_MODEL;
 
     const response = await ai.models.generateContent({
